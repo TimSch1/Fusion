@@ -1,26 +1,48 @@
+SELECT fullVisitorId, visitNumber, visitId, hits.hitNumber, hits.time,
+MAX(IF(hits.customDimensions.index=9,
+       hits.customDimensions.value,
+       NULL)) WITHIN hits AS customDimension9, MAX(IF(hits.customDimensions.index=10,
+                                                      hits.customDimensions.value,
+                                                      NULL)) WITHIN hits AS customDimension10, 
+FROM [79749168.ga_sessions_20150522]
+LIMIT 1800;
+#customDimension10
+
 setwd("C:/Users/TimBo/Downloads/R docs and scripts/Fusion")
-table = read.csv('firsttable.csv')
-head(table)
-table = table[,1:7]
-head(table)
-library(reshape2)
+table = read.csv('TimTable1.csv')
+table = table[,c(1,6)]
+
+
 library(tidyr)
+library(reshape2)
 library(plyr)
-library(dplyr)
 
 #Get counts of visitors to article topics
 p = ddply(table, .(fullVisitorId, customDimension9), count)
 p = spread(p, customDimension9, n, fill=0)
+p = p[-143,-c(2:3)]
+
+#Dimension10 - break up topics into components
+h = strsplit(table$customDimension10, ' ')
+names(h) = table$fullVisitorId
+h = unlist(h)
+j = data.frame(fullVisitorId = names(h), topic = h)
+q = data.frame(fullVisitorId = unique(j$fullVisitorId), newId = 1:length(unique(j$fullVisitorId)))
+j = left_join(j,q)
+k = ddply(j, .(topic, newId), count)
+
+k = spread(k, topic, n, fill=0)
 
 #Exploratory Factor Analysis
 processed = scale(p[,-1], center=TRUE, scale=TRUE)
 
 library(psych)
-pca = principal(processed, nfactor=2, covar=FALSE)
+library(GPArotation)
+pca = principal(processed, nfactor=6, covar=FALSE)
 pca$loadings
 
 #Visualize Factor Loadings
-loadings = as.data.frame(pca$loadings[,1:2])
+loadings = as.data.frame(pca$loadings[,1:6])
 loadings$topic = rownames(loadings)
 loadings_m = melt(loadings, id='topic')
 
@@ -31,21 +53,35 @@ ggplot(loadings_m, aes(x=variable, y=topic, label = round(value,2), fill=value))
   theme(axis.text.y = element_text(size=8))+
   theme_bw()
 
-#Cluster Data
+#Visualize Coordinates
+library(rgl)
+dist.proc = dist(processed)
+cmd.proc = cmdscale(dist.proc, 3)
+plot(cmd.proc)
+plot3d(cmd.proc[,2], cmd.proc[,1], cmd.proc[,3])
+
 PCs = pca$scores
+plot3d(PCs[,2], PCs[,1], PCs[,4])
+plot3d(PCs[,2], PCs[,1], PCs[,3])
+
+#Cluster Data
 set.seed(400)
-cluster=kmeans(processed, 2)
+cluster=kmeans(processed, 4, nstart=250)
 
 #Visualize Clusters
 library(scatterplot3d)
 library(rgl)
-scatterplot3d(PCs[,2], PCs[,1], PCs[,3], color=cluster$cluster)
+scatterplot3d(PCs[,2], PCs[,1], PCs[,4], color=cluster$cluster)
+plot3d(PCs[,2], PCs[,1], PCs[,4], col=cluster$cluster)
 plot3d(PCs[,2], PCs[,1], PCs[,3], col=cluster$cluster)
+plot3d(cmd.proc[,2], cmd.proc[,1], cmd.proc[,3], col=cluster$cluster)
+
+
 
 library(cluster)
 dissProc = daisy(processed)
 dissProc2 = dissProc^2
-plot(silhouette(cluster$cluster, dissProc2))
+plot(silhouette(cluster$cluster, dist.proc))
 
 
 sort(cluster$centers[1,], decreasing=T)[1:5]
