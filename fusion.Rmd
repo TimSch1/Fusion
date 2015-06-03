@@ -1,0 +1,327 @@
+---
+title: "Fusion Audiences"
+author: "Timothy J. Schmeier, PhD"
+date: "Tuesday, June 02, 2015"
+output: html_document
+---
+
+Using Google BigQuery this is the first attempt to segment Fusion.net's users. Two big caveats readers of this analysis should keep in mind are:
+
+- This is data from a single day and should not be generalized, normal variation and other unknown factors may change any of the derived parameters. This analysis should be repeated with many days to get an average estimate and range of possible values (This was not done due to computational limitations).
+
+- Factor Analysis and k-means clustering do not provide unique solutions. It is possible to obtain different results using the same data. Increasing the sample size will enhance reproducibility.
+
+The first analysis will look at Fusion users at a high-level, clustering users by website section. The second analysis will dig into details, segmenting Fusion's Justice section users.
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+#setwd("C:/Users/TimBo/Downloads/R docs and scripts/Fusion")
+library(data.table)
+library(plyr)
+library(dplyr)
+table = fread('TimTable1.csv')  #Read in data
+
+#Filter table contents by website sections
+sections = c('news','justice','pop-culture','sex-life','real-future','voices','show','latin-america', 'soccer-gods','homepage')
+
+table = table[table$customDimension9 %in% sections,]
+
+user.topic = select(table, fullVisitorId, customDimension9)
+```
+
+First, data is obtained from BigQuery and the results are filtered to include only results related to the website sections. Then they are aggregated to give the counts of website section by user.
+
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyr)
+library(reshape2)
+
+#Counts of user activity by website section
+user.counts = user.topic %>% 
+              group_by(fullVisitorId, customDimension9) %>% 
+              summarize(counts = n())
+
+user.counts.wide = spread(ungroup(user.counts), customDimension9, counts, fill=0)
+```
+
+Exploratory factor analysis was used as a first pass to visualize the data. As each section is already an aggregate of more fundamental issues it is unsurprising to find that most sections have their own audience. For example, the Justice section is a broad aggregate that includes issues such as civil-rights, police-brutality, and others. These are probably the underlying drivers of user engagement we cannot find by doing this high-level analysis.
+
+```{r, warning=FALSE, message=FALSE}
+#Exploratory Factor Analysis
+processed = as.data.frame(user.counts.wide)
+processed = scale(processed[,-1], center=TRUE, scale=TRUE)
+
+library(psych)
+library(GPArotation)
+pca = principal(processed, nfactor=7, covar=FALSE)
+pca$loadings
+
+#Visualize Factor Loadings
+loadings = as.data.frame(pca$loadings[,1:7])
+loadings$topic = rownames(loadings)
+loadings_m = melt(loadings, id='topic')
+
+library(ggplot2)
+ggplot(loadings_m, aes(x=variable, y=topic, label = round(value,2), fill=value))+
+  geom_tile()+
+  xlab('Factor')+
+  ylab('Topic')+
+  geom_text(size=4, alpha = 0.8)+
+  scale_fill_continuous(low='yellow', high='red', name='Loadings')+
+  theme(axis.text.y = element_text(size=8))+
+  theme_bw()+
+  ggtitle('Factor Correlations')
+```
+
+Factor loadings can be interpreted like correlation coefficients, if one factor has large positive correlation values (usually >0.7) with multiple variables those variables have a common 'latent factor' or hidden underlying explanatory cause. Factor 1 is an example of this where homepage users also view show articles. Factor 2 is interesting, it has a large positive correlation with latin-america and a large negative correlation with pop-culture, meaning users interested in latin-american issues avoid pop-culture articles more than any other type of article. Unsurprisingly, almost all sections have a dedicated readership.
+
+```{r, warning=FALSE, message=FALSE}
+#Cluster Data
+set.seed(400)
+wss <- (nrow(processed)-1)*sum(apply(processed,2,var))
+for (i in 2:15) wss[i] <- sum(kmeans(processed,
+                                     centers=i)$withinss)
+plot(1:15, wss, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+set.seed(400)
+cluster = kmeans(processed, 7, nstart=100)
+```
+
+The within groups sum of squares plot indicates 7 centers should be used to cluster Fusion's viewer data. As the data is centered and scaled prior to clustering the cluster centers are interpreted as z-scores. A value of 0 indicates a cluster looks at one article at the same rate as the grand mean of all clusters, +1 is interpreted as users that view an article topics more than 84% of all other clusters users and greater than +2 more than 95%. Likewise, a -1 indicates a cluster views an article less than the grand mean of all users, more than only 16% of other users. A value of less than -2 indicates the cluster center views article topics only more than 5% of other viewers indicating total disengagement with website section.
+
+Cluster 7 is the baseline segment, users that browse and engage with multiple topics at about average (actually they almost define grand mean). Cluster 5 is show viewers which also view the homepage and news articles. Underperforming sections include soccer-gods, pop-culture, and news which don't seem to have dedicated audiences. Additionally, most segments seem to actively avoid pop-culture except Cluster 7. 
+
+
+```{r, warning=FALSE, message=FALSE}
+#What do the clusters look like?
+ctrs = cluster$centers
+ctrs_m = melt(ctrs)
+ggplot(ctrs_m, aes(x=Var1, y=Var2, label = round(value,2), fill=value))+
+  geom_tile()+
+  xlab('Cluster Number')+
+  ylab('Topic')+
+  geom_text(size=4, alpha = 0.8)+
+  scale_fill_continuous(low='yellow', high='red', name='Z-scores')+
+  theme(axis.text.y = element_text(size=8))+
+  theme_bw()+
+  ggtitle('K-Means Cluster Centers')
+```
+
+The largest segments are the browsing Cluster 7, the latin-america Cluster 1, and the justice segment, Cluster 4.
+
+Segments with the highest likelihood of sharing are Clusters 1, 2, and 4, the latin-american, voices, and justice clusters.
+
+Twitter seems to be the social network most Fusion users share content on while most of them discover Fusion content through Facebook, an interesting asymmetry which is not yet understood.
+
+Voices and show clusters 2 and 5 users are most engaged, spending more time reading content on the website than other segments.
+
+```{r, warning=FALSE, message=FALSE}
+#Cluster Size
+rel.size = as.data.frame(table(cluster$cluster)/length(cluster$cluster))
+
+ggplot(rel.size, aes(x=Var1, y=Freq, fill=factor(Var1)))+
+      geom_bar(stat='identity')+
+      theme_bw()+
+      ylab('Proportion')+
+      xlab('Cluster')+
+      scale_fill_discrete(name='Cluster')+
+      ggtitle('Relative Segment Size')
+
+
+
+#How often do they share?
+user.counts.wide$label = cluster$cluster
+userId.label = select(user.counts.wide, fullVisitorId, label)
+labelled.table = left_join(table, userId.label)
+labelled.table$shares = 
+  ifelse(labelled.table$hits_social_socialInteractionAction == 'share', 1, 0)
+
+shares = labelled.table %>% group_by(label) %>% 
+          summarize(count = n(), shares = sum(shares)) %>% 
+          mutate(percent = shares/count*100)
+
+shares = shares[complete.cases(shares),]
+
+ggplot(shares, aes(x=count, y=shares, label=round(percent,3), 
+                   color=factor(label)), size=20)+
+        geom_point()+
+        theme_bw()+
+        xlab('Visits')+
+        ylab('Shares')+
+        scale_color_discrete(name='Class')+
+        geom_text()+
+        ggtitle('Proportion of Users Sharing by Class')
+
+#Where do they share?
+shares2 = labelled.table %>% filter(shares == 1)%>%
+  group_by(label, hits_social_socialInteractionNetwork) %>% 
+  summarize(count = n()) %>% 
+  mutate(by.class = sum(count), percent = count/by.class*100)
+
+ggplot(shares2, aes(x=hits_social_socialInteractionNetwork, y=percent, fill=hits_social_socialInteractionNetwork))+
+  geom_bar(stat='identity')+
+  facet_wrap(~label)+
+  theme_bw()+
+  xlab('Social Network')+
+  ylab('Percentage')+
+  scale_fill_discrete('Network')+
+  theme(axis.text.x=element_blank())+
+  ggtitle("Social Network Preferences by Segment")
+
+
+#How do users find fusion?
+
+#take out random m. or l.facebook and .coms & condense t.co and twitter to twitter
+labelled.table$trafficSource_source = gsub('[[:lower:]]*.*facebook.*[[:lower:]]*', 'facebook', labelled.table$trafficSource_source)
+labelled.table$trafficSource_source = gsub('t.co', 'twitter', labelled.table$trafficSource_source)
+
+
+origin = as.data.frame(labelled.table) %>% group_by(label, trafficSource_source) %>%
+          summarize(by.source = n()) %>%
+          mutate(by.class = sum(by.source), percent = by.source/by.class) %>%
+          arrange(label, desc(percent)) %>% slice(1:5)
+
+origin = origin[complete.cases(origin),]
+
+ggplot(origin, aes(x=trafficSource_source, y=percent, 
+                   fill = factor(trafficSource_source)))+
+        geom_bar(stat='identity')+
+        theme_bw()+
+        facet_wrap(~label)+
+        xlab('Traffic Origin')+
+        ylab('Percentage of Traffic')+
+        theme(axis.text.x = element_blank())+
+        scale_fill_discrete(name='Source')+
+        ggtitle('Traffic Origin by Segment')
+
+#How long do users stay?
+
+sources = unique(origin$trafficSource_source)
+
+time = as.data.frame(labelled.table) %>% filter(trafficSource_source %in% sources) %>%
+  group_by(label, trafficSource_source) %>%
+  summarize(ave.min = mean(hits_time/60000)) %>%
+  arrange(desc(ave.min)) %>%
+  slice(1:5)
+
+
+ggplot(time, aes(x=trafficSource_source, y=ave.min, fill = factor(trafficSource_source)))+
+  geom_bar(stat='identity')+
+  theme_bw()+
+  facet_wrap(~label)+
+  xlab('Traffic Origin')+
+  ylab('Length of Stay (min)')+
+  theme(axis.text.x = element_blank())+
+  scale_fill_discrete(name='Source')+
+  ggtitle('User Engagement by Segment')
+```
+
+Doing much the same analysis I wanted to break down the Justice section users. Unfortunately, the article tags seemed random and unstandardized (e.g. gay, same-sex-marriage, lgbt, and lgbt-marriage can all be grouped under the lgbt tag). This leads to increased dimensionality and computational complexity. In the future the tags should be standardized to facilitate analysis. Also only justice tags were retained for this analysis but users might be engaged with sub-issues in other website sections which were filtered out. A website wide clustering analysis would be more revealing but was beyond the scope of this analysis.
+
+```{r, warning=FALSE, message=FALSE}
+#Dimension10 - dig deeper, segments inside the 'justice' website section******
+table.justice = filter(table, customDimension9 == 'justice')
+tags = strsplit(table.justice$customDimension10, ' ')
+names(tags) = table.justice$fullVisitorId
+tags = unlist(tags)
+
+#reduce dimensionality; standardize tags
+tags = gsub('transgender|same-sex-marriage|anti-gay-laws|gay|lgbt-marriage', 'lgbt', tags)
+tags = gsub('marijuana-legalization|cannabusiness-report|marijuana-law', 'marijuana', tags)
+tags = gsub('drug-wars-confidential|cartel-confidential|drug-war|cartel', 'drugs', tags)
+tags = gsub('immigration-policy|immigration-bill|immigration-youth|immigrant-youth|immigration-reform|undocumented-immigrants', 'immigration', tags)
+tags = gsub('race-and-racism|race-relations|racism', 'race', tags)
+tags = gsub('gun-violence', 'guns', tags)
+tags = gsub('electronic-music', 'music', tags)
+tags = gsub('gun-violence', 'guns', tags)
+tags = gsub('hispanic', 'latino', tags)
+tags = gsub('dogs', 'animals', tags)
+tags = gsub('police-2|police-brutality', 'police', tags)
+tags = gsub('college-life', 'college', tags)
+tags = gsub('freddie-gray|baltimore|ferguson|riseup|baltimore-riots', 'protests', tags)
+tags = gsub('environment|climate-change', 'green', tags)
+tags = gsub('millennials', 'youth', tags)
+tags = gsub('streaming-video|viral|trending', 'social-media', tags)
+tags = gsub('television', 'tv', tags)
+
+justice.topic = data.frame(fullVisitorId = names(tags), topic = tags)
+
+justiceuser.counts = justice.topic %>% 
+  group_by(fullVisitorId, topic) %>% 
+  summarize(counts = n())
+
+library(tidyr)
+justice.counts.wide = spread(as.data.frame(justiceuser.counts), topic, counts, fill=0)
+
+#Exploratory Factor Analysis
+processed = as.data.frame(justice.counts.wide)
+processed = scale(processed[,-1], center=TRUE, scale=TRUE)
+
+library(psych)
+library(GPArotation)
+pca = principal(processed, nfactor=12, covar=FALSE)
+
+#Visualize Factor Loadings
+library(reshape2)
+loadings = as.data.frame(pca$loadings[,1:12])
+loadings$topic = rownames(loadings)
+loadings_m = melt(loadings, id='topic')
+
+library(ggplot2)
+ggplot(loadings_m, aes(x=variable, y=topic, label = round(value,2), fill=value))+
+  geom_tile()+
+  xlab('Factor')+
+  ylab('Topic')+
+  geom_text(size=0.5, alpha = 0.5)+
+  scale_fill_continuous(low='yellow', high='red', name='Loadings')+
+  theme(axis.text.y = element_text(size=1))+
+  theme_bw()+
+  ggtitle('Factor Correlations')
+
+#Cluster Data
+set.seed(100)
+
+wss <- (nrow(processed)-1)*sum(apply(processed,2,var))
+for (i in 2:15) wss[i] <- sum(kmeans(processed,
+                                     centers=i)$withinss)
+plot(1:15, wss, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+
+
+set.seed(100)
+cluster = kmeans(processed, 12, nstart=250)
+
+sort(cluster$centers[1,], decreasing=T)[1:5]
+sort(cluster$centers[2,], decreasing=T)[1:5]
+sort(cluster$centers[3,], decreasing=T)[1:5]
+sort(cluster$centers[4,], decreasing=T)[1:5]
+sort(cluster$centers[5,], decreasing=T)[1:5]
+sort(cluster$centers[6,], decreasing=T)[1:5]
+sort(cluster$centers[7,], decreasing=T)[1:5]
+sort(cluster$centers[8,], decreasing=T)[1:5]
+sort(cluster$centers[9,], decreasing=T)[1:5]
+sort(cluster$centers[10,], decreasing=T)[1:5]
+sort(cluster$centers[11,], decreasing=T)[1:5]
+sort(cluster$centers[12,], decreasing=T)[1:5]
+```
+
+Unfortunately, many of the cluster centers seemed random, beauty, students, and fashion comprise the largest segments besides the baseline browser segment which dominates the other clusters in size (protest articles seem to be most engaging to the largest segment). This indicates cluster centers are chasing outliers (why are fashion and beauty tags in a 'Justice' section?) instead of revealing the true structure of the Justice segment. Standardization of tagging articles should aid in this process.
+
+Another interpretation is that Fusion is a young website and the segments and structure are not well-defined. However, a number of other ideas must be tested prior to confirming this conclusion.
+
+
+```{r, warning=FALSE, message=FALSE}
+rel.size = as.data.frame(table(cluster$cluster)/length(cluster$cluster))
+
+ggplot(rel.size, aes(x=Var1, y=Freq, fill=factor(Var1)))+
+      geom_bar(stat='identity')+
+      theme_bw()+
+      ylab('Proportion')+
+      xlab('Cluster')+
+      scale_fill_discrete(name='Cluster')+
+      ggtitle('Relative Justice Segment Size')
+
+```
+
+In addition to the unresolved issues above differing clustering algorithms may give superior results but have not been tested, this analysis could easily be a 6 month project and would require more robust computation resources than are currently available.
